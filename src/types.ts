@@ -18,6 +18,15 @@ export interface GameState {
   answeredQuestions: number;
   isPlaying: boolean;
   question: GameQuestion | null;
+  tableChallenge: TableChallenge | null;
+}
+
+export interface TableChallenge {
+  table: number;
+  startedAt: number;
+  index: number;
+  questionId: string;
+  factor: number;
 }
 
 export interface Reward {

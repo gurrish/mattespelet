@@ -129,4 +129,92 @@ test("authenticated player can play, earn points, and redeem an admin-created re
   assert.equal((await listedRewards.json()).length, 2);
   const listedRedemptions = await handle(request("/api/redemptions", "GET", adminHeaders), context);
   assert.equal((await listedRedemptions.json()).length, 1);
+
+  await handle(request("/api/game/forfeit", "POST", playerHeaders), context);
+  const invalidTable = await handle(request("/api/game/table/start", "POST", {
+    ...playerHeaders,
+    "content-type": "application/json",
+  }, JSON.stringify({ table: 13 })), context);
+  assert.equal(invalidTable.status, 400);
+
+  const startedChallenge = await handle(request("/api/game/table/start", "POST", {
+    ...playerHeaders,
+    "content-type": "application/json",
+  }, JSON.stringify({ table: 6 })), context);
+  let challengeGame = await startedChallenge.json();
+  const tablePointsBefore = challengeGame.points;
+  const firstTableQuestion = challengeGame.tableChallenge;
+  const originalNow = Date.now;
+  let restartedChallenge;
+  try {
+    Date.now = () => firstTableQuestion.startedAt + 1_000;
+    const wrongTableAnswer = await handle(request("/api/game/table/answer", "POST", {
+      ...playerHeaders,
+      "content-type": "application/json",
+    }, JSON.stringify({ questionId: firstTableQuestion.questionId, answer: 0 })), context);
+    restartedChallenge = await wrongTableAnswer.json();
+  } finally {
+    Date.now = originalNow;
+  }
+  assert.equal(restartedChallenge.correct, false);
+  assert.equal(restartedChallenge.game.tableChallenge.index, 0);
+  assert.notEqual(restartedChallenge.game.tableChallenge.questionId, firstTableQuestion.questionId);
+  assert.equal(restartedChallenge.game.tableChallenge.startedAt, firstTableQuestion.startedAt + 1_000);
+
+  challengeGame = restartedChallenge.game;
+  let tableResult;
+  for (let index = 0; index < 12; index++) {
+    const current = challengeGame.tableChallenge;
+    tableResult = await handle(request("/api/game/table/answer", "POST", {
+      ...playerHeaders,
+      "content-type": "application/json",
+    }, JSON.stringify({ questionId: current.questionId, answer: 6 * current.factor })), context);
+    tableResult = await tableResult.json();
+    challengeGame = tableResult.game;
+  }
+  assert.equal(tableResult.complete, true);
+  assert.equal(tableResult.earnedPoints, 10);
+  assert.equal(challengeGame.points, tablePointsBefore + 10);
+  assert.equal(challengeGame.isPlaying, false);
+
+  const easyChallengeResponse = await handle(request("/api/game/table/start", "POST", {
+    ...playerHeaders,
+    "content-type": "application/json",
+  }, JSON.stringify({ table: 1 })), context);
+  challengeGame = await easyChallengeResponse.json();
+  for (let index = 0; index < 12; index++) {
+    const current = challengeGame.tableChallenge;
+    const response = await handle(request("/api/game/table/answer", "POST", {
+      ...playerHeaders,
+      "content-type": "application/json",
+    }, JSON.stringify({ questionId: current.questionId, answer: current.factor })), context);
+    tableResult = await response.json();
+    challengeGame = tableResult.game;
+  }
+  assert.equal(tableResult.complete, true);
+  assert.equal(tableResult.earnedPoints, 5);
+  assert.equal(challengeGame.points, tablePointsBefore + 15);
+
+  const expiringChallenge = await handle(request("/api/game/table/start", "POST", {
+    ...playerHeaders,
+    "content-type": "application/json",
+  }, JSON.stringify({ table: 12 })), context);
+  const expiringGame = await expiringChallenge.json();
+  try {
+    Date.now = () => expiringGame.tableChallenge.startedAt + 60_000;
+    const expiredAnswer = await handle(request("/api/game/table/answer", "POST", {
+      ...playerHeaders,
+      "content-type": "application/json",
+    }, JSON.stringify({
+      questionId: expiringGame.tableChallenge.questionId,
+      answer: 12 * expiringGame.tableChallenge.factor,
+    })), context);
+    const expiredResult = await expiredAnswer.json();
+    assert.equal(expiredResult.expired, true);
+    assert.equal(expiredResult.complete, false);
+    assert.equal(expiredResult.game.points, expiringGame.points);
+    assert.equal(expiredResult.game.isPlaying, false);
+  } finally {
+    Date.now = originalNow;
+  }
 });

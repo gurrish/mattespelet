@@ -80,6 +80,17 @@ a { color: inherit; text-decoration: none; }
 .button-secondary { border: 1px solid #e2def0; background: #fff; color: #69637e; }
 .start-area, .result-area { display: flex; min-height: 180px; align-items: center; justify-content: center; flex-direction: column; gap: 13px; padding: 18px; text-align: center; }
 .start-area p { margin: 0 0 4px; color: var(--muted); font-size: 14px; font-weight: 700; }
+.table-mode-title { margin-top: 9px; color: #706b82; font-size: 13px; }
+.table-buttons { display: grid; width: min(100%, 560px); grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.table-buttons .button { min-height: 42px; padding: 0 6px; font-size: 12px; }
+.table-challenge { margin-top: 22px; }
+.table-challenge-info { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; padding: 12px 15px; border-radius: 15px; background: #fff8d9; color: #675318; }
+.table-challenge-info strong { font-size: 17px; font-weight: 900; }
+.table-challenge-info span { display: inline-flex; align-items: center; gap: 5px; font-weight: 900; }
+.table-challenge-info small { color: #827849; font-size: 11px; font-weight: 800; }
+.table-challenge>.answer-result { margin-bottom: 12px; }
+.table-question-area { margin-top: 0; }
+.table-question-area .question-card { min-height: 160px; }
 .answer-result { display: flex; flex-direction: column; gap: 4px; padding: 14px 22px; border-radius: 17px; background: #fff6dc; color: #725700; }
 .answer-result strong { font-size: 18px; font-weight: 900; }
 .answer-result span { font-size: 13px; font-weight: 700; }
@@ -161,6 +172,9 @@ a { color: inherit; text-decoration: none; }
   .game-card { padding: 19px 16px; border-radius: 21px; }
   .question-area { grid-template-columns: 1fr; gap: 16px; margin-top: 18px; }
   .question-card { min-height: 155px; }
+  .table-buttons { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .table-challenge-info { flex-wrap: wrap; }
+  .table-challenge-info strong { width: 100%; }
   .answer-form { gap: 8px; }
   .answer-row input { height: 54px; }
   .answer-row .button { min-width: 112px; padding: 0 13px; }

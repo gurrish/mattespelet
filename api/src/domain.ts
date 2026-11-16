@@ -11,11 +11,23 @@ export const answerInputSchema = z.object({
   answer: z.number().int().min(0).max(144),
 }).strict();
 
+export const tableStartSchema = z.object({
+  table: z.number().int().min(1).max(12),
+}).strict();
+
 export type GameQuestion = {
   id: string;
   left: number;
   right: number;
   points: number;
+};
+
+export type TableChallenge = {
+  table: number;
+  startedAt: number;
+  factors: number[];
+  index: number;
+  questionId: string;
 };
 
 export type PlayerState = {
@@ -25,6 +37,7 @@ export type PlayerState = {
   answeredQuestions: number;
   activeGameId: string | null;
   question: GameQuestion | null;
+  tableChallenge: TableChallenge | null;
   redemptions: Redemption[];
 };
 
@@ -54,6 +67,7 @@ export function newPlayer(email: string): PlayerState {
     answeredQuestions: 0,
     activeGameId: null,
     question: null,
+    tableChallenge: null,
     redemptions: [],
   };
 }

@@ -50,6 +50,9 @@ function playerFromEntity(entity: StoredEntity): PlayerState {
     answeredQuestions: entity.answeredQuestions,
     activeGameId,
     question,
+    tableChallenge: typeof entity.tableChallenge === "string" && entity.tableChallenge
+      ? JSON.parse(entity.tableChallenge) as PlayerState["tableChallenge"]
+      : null,
     redemptions: JSON.parse(entity.redemptions) as Redemption[],
   };
 }
@@ -64,6 +67,7 @@ function playerEntity(id: string, player: PlayerState): TableEntity<Record<strin
     answeredQuestions: player.answeredQuestions,
     activeGameId: player.activeGameId ?? "",
     question: player.question ? JSON.stringify(player.question) : "",
+    tableChallenge: player.tableChallenge ? JSON.stringify(player.tableChallenge) : "",
     redemptions: JSON.stringify(player.redemptions),
   };
 }

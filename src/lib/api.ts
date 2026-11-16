@@ -18,9 +18,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const getViewer = () => request<Viewer>("/api/me");
 export const getGame = () => request<GameState>("/api/game");
 export const startGame = () => request<GameState>("/api/game/start", { method: "POST" });
+export const startTableChallenge = (table: number) =>
+  request<GameState>("/api/game/table/start", { method: "POST", body: JSON.stringify({ table }) });
 export const nextQuestion = () => request<GameState>("/api/game/next", { method: "POST" });
 export const submitAnswer = (questionId: string, answer: number) =>
   request<AnswerResult>("/api/game/answer", { method: "POST", body: JSON.stringify({ questionId, answer }) });
+export const submitTableAnswer = (questionId: string, answer: number) =>
+  request<{
+    game: GameState;
+    correct: boolean;
+    correctAnswer: number;
+    complete: boolean;
+    expired: boolean;
+    earnedPoints: number;
+  }>(
+    "/api/game/table/answer", { method: "POST", body: JSON.stringify({ questionId, answer }) },
+  );
 export const forfeitGame = (keepalive = false) =>
   request<{ game: GameState; penalty: number }>("/api/game/forfeit", { method: "POST", keepalive });
 export const getRewards = () => request<Reward[]>("/api/rewards");

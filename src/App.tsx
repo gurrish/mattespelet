@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowRight, Check, Gift, LogIn, LogOut, Pencil, Plus, ShieldAlert, Sparkles, Star, Trash2, Trophy, X } from "lucide-react";
+import { ArrowRight, Check, Clock, Gift, LogIn, LogOut, Pencil, Plus, ShieldAlert, Sparkles, Star, Trash2, Trophy, X } from "lucide-react";
 import {
   createReward,
   deleteReward,
@@ -11,7 +11,9 @@ import {
   nextQuestion,
   redeemReward,
   startGame,
+  startTableChallenge,
   submitAnswer,
+  submitTableAnswer,
   updateReward,
 } from "./lib/api";
 import type { AnswerResult, GameState, Redemption, Reward, RewardInput, Viewer } from "./types";
@@ -27,6 +29,8 @@ export default function App() {
   const [redemptions, setRedemptions] = useState<Redemption[]>([]);
   const [answer, setAnswer] = useState("");
   const [lastResult, setLastResult] = useState<AnswerResult | null>(null);
+  const [tableResult, setTableResult] = useState<{ correct: boolean; correctAnswer: number; expired: boolean } | null>(null);
+  const [clock, setClock] = useState(Date.now());
   const [rewardDraft, setRewardDraft] = useState<RewardInput>(emptyReward);
   const [editingRewardId, setEditingRewardId] = useState("");
   const [loading, setLoading] = useState(true);
@@ -75,6 +79,12 @@ export default function App() {
     };
   }, [viewer.isPlayer, game?.isPlaying]);
 
+  useEffect(() => {
+    if (!game?.tableChallenge) return;
+    const timer = window.setInterval(() => setClock(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [game?.tableChallenge?.startedAt]);
+
   async function run<T>(action: () => Promise<T>, onSuccess: (value: T) => void, fallback: string) {
     setBusy(true);
     setError("");
@@ -114,13 +124,30 @@ export default function App() {
       forfeitReported.current = false;
       setGame(updated);
       setLastResult(null);
+      setTableResult(null);
       setAnswer("");
     }, "Spelet kunde inte starta.");
+  }
+
+  function beginTableChallenge(table: number) {
+    void run(
+      () => startTableChallenge(table),
+      (updated) => {
+        forfeitReported.current = false;
+        setGame(updated);
+        setLastResult(null);
+        setTableResult(null);
+        setAnswer("");
+        setClock(Date.now());
+      },
+      "Tabellutmaningen kunde inte starta.",
+    );
   }
 
   function requestNextQuestion() {
     void run(nextQuestion, setGame, "Nästa fråga kunde inte hämtas.");
     setLastResult(null);
+    setTableResult(null);
     setAnswer("");
   }
 
@@ -137,6 +164,27 @@ export default function App() {
         setGame(result.game);
         setLastResult(result);
         setAnswer("");
+      },
+      "Svaret kunde inte skickas.",
+    );
+  }
+
+  function sendTableAnswer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const challenge = game?.tableChallenge;
+    const value = Number(answer.trim());
+    if (!answer.trim() || !Number.isInteger(value) || value < 0 || value > 144 || !challenge) {
+      setError("Skriv ett heltal mellan 0 och 144.");
+      return;
+    }
+    void run(
+      () => submitTableAnswer(challenge.questionId, value),
+      (result) => {
+        setGame(result.game);
+        setTableResult(result);
+        setAnswer("");
+        if (result.complete) setNotice(`Hela ${challenge.table}:ans tabell klar! Du fick ${result.earnedPoints} poäng.`);
+        else if (result.expired) setNotice("Tiden tog slut. Försök igen!");
       },
       "Svaret kunde inte skickas.",
     );
@@ -256,6 +304,38 @@ export default function App() {
                       </div>
                     </form>
                   </div>
+                  : game.isPlaying && game.tableChallenge
+                    ? <div className="table-challenge">
+                      <div className="table-challenge-info">
+                        <strong>{game.tableChallenge.table}:ans tabell</strong>
+                        <span><Clock size={17} /> {Math.ceil(Math.max(0, 60_000 - (clock - game.tableChallenge.startedAt)) / 1000)} sekunder</span>
+                        <small>Fråga {game.tableChallenge.index + 1} av 12</small>
+                      </div>
+                      {clock - game.tableChallenge.startedAt >= 60_000
+                        ? <div className="result-area">
+                          <div className="answer-result incorrect"><strong>Tiden tog slut!</strong><span>Starta om och försök igen.</span></div>
+                          <button className="button button-primary" onClick={() => beginTableChallenge(game.tableChallenge!.table)} disabled={busy}>Försök igen</button>
+                        </div>
+                        : <>
+                          {tableResult && <div className={`answer-result${tableResult.expired || !tableResult.correct ? " incorrect" : " correct"}`}>
+                            <strong>{tableResult.expired ? "Tiden tog slut!" : tableResult.correct ? "Rätt!" : "Fel svar – vi börjar om!"}</strong>
+                            <span>{tableResult.expired ? "Ingen poäng den här gången." : tableResult.correct ? "Fortsätt så!" : `Rätt svar var ${tableResult.correctAnswer}. Klockan har startat om.`}</span>
+                          </div>}
+                          <div className="question-area table-question-area">
+                            <div className="question-card">
+                              <span className="question-label">KLARA HELA TABELLEN PÅ EN MINUT</span>
+                              <div className="question">{game.tableChallenge.table}<span>×</span>{game.tableChallenge.factor}<span>=</span><b>?</b></div>
+                            </div>
+                            <form className="answer-form" onSubmit={sendTableAnswer}>
+                              <label htmlFor="answer">Skriv ditt svar</label>
+                              <div className="answer-row">
+                                <input id="answer" inputMode="numeric" pattern="[0-9]*" autoComplete="off" maxLength={3} value={answer} onChange={(event) => setAnswer(event.target.value.replace(/\D/g, ""))} aria-label="Ditt svar" />
+                                <button className="button button-primary" type="submit" disabled={busy || !answer}><Check size={19} /> Svara</button>
+                              </div>
+                            </form>
+                          </div>
+                        </>}
+                    </div>
                   : game.isPlaying
                     ? <div className="result-area">
                       {lastResult && <div className={`answer-result${lastResult.correct ? " correct" : " incorrect"}`}>
@@ -265,8 +345,16 @@ export default function App() {
                       <button className="button button-primary next-button" onClick={requestNextQuestion} disabled={busy}>Nästa fråga <ArrowRight size={18} /></button>
                     </div>
                     : <div className="start-area">
-                      <p>Varje rätt svar ger 1–3 poäng. Klurigare tal ger fler poäng.</p>
+                      <p>Välj ett spelläge. I tabellutmaningen ska du klara alla 12 tal på en minut. Fel svar nollställer klockan.</p>
                       <button className="button button-primary" onClick={beginGame} disabled={busy}><Sparkles size={19} /> Börja spela</button>
+                      <strong className="table-mode-title">Eller välj en tabell att klara på en minut</strong>
+                      <div className="table-buttons">
+                        {Array.from({ length: 12 }, (_, index) => index + 1).map((table) =>
+                          <button className="button button-secondary" key={table} onClick={() => beginTableChallenge(table)} disabled={busy}>
+                            {table}:ans · {table >= 6 && table <= 9 || table === 12 ? 10 : 5} p
+                          </button>,
+                        )}
+                      </div>
                     </div>}
 
                 <div className="game-stats"><span><Check size={15} /> {game.correctAnswers} rätt</span><span>{game.answeredQuestions} {game.answeredQuestions === 1 ? "fråga" : "frågor"} besvarade</span></div>

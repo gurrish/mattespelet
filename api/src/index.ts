@@ -1,6 +1,14 @@
 import { app, type HttpRequest, type InvocationContext } from "@azure/functions";
 import { createHash, randomInt, randomUUID } from "node:crypto";
-import { PlayerConflictError, answerInputSchema, rewardInputSchema, type GameQuestion, type PlayerState } from "./domain.js";
+import {
+  PlayerConflictError,
+  answerInputSchema,
+  rewardInputSchema,
+  tableStartSchema,
+  type GameQuestion,
+  type PlayerState,
+  type TableChallenge,
+} from "./domain.js";
 import { createReward, getRepository } from "./repository.js";
 
 interface Identity {
@@ -96,6 +104,21 @@ function createQuestion(): GameQuestion {
   return { id: randomUUID(), left, right, points };
 }
 
+const TABLE_CHALLENGE_DURATION = 60_000;
+
+function shuffledFactors(): number[] {
+  const factors = Array.from({ length: 12 }, (_, index) => index + 1);
+  for (let index = factors.length - 1; index > 0; index--) {
+    const swapIndex = randomInt(index + 1);
+    [factors[index], factors[swapIndex]] = [factors[swapIndex], factors[index]];
+  }
+  return factors;
+}
+
+function createTableChallenge(table: number): TableChallenge {
+  return { table, startedAt: Date.now(), factors: shuffledFactors(), index: 0, questionId: randomUUID() };
+}
+
 function publicPlayer(player: PlayerState) {
   return {
     points: player.points,
@@ -103,6 +126,13 @@ function publicPlayer(player: PlayerState) {
     answeredQuestions: player.answeredQuestions,
     isPlaying: player.activeGameId !== null,
     question: player.question,
+    tableChallenge: player.tableChallenge ? {
+      table: player.tableChallenge.table,
+      startedAt: player.tableChallenge.startedAt,
+      index: player.tableChallenge.index,
+      questionId: player.tableChallenge.questionId,
+      factor: player.tableChallenge.factors[player.tableChallenge.index],
+    } : null,
   };
 }
 
@@ -128,16 +158,75 @@ export async function handle(request: HttpRequest, context: InvocationContext): 
       const actor = requirePlayer(request);
       const key = playerKey(actor.id);
       if (method === "GET" && !id) return json(publicPlayer(await repo.getPlayer(key, actor.email)));
+      if (method === "POST" && id === "table" && action === "start") {
+        const parsed = tableStartSchema.safeParse(await readBody(request));
+        if (!parsed.success) throw new HttpError(400, "Välj en gångertabell mellan 1 och 12.");
+        const player = await repo.updatePlayer(key, actor.email, (current) => {
+          const expiredChallenge = current.tableChallenge
+            && Date.now() - current.tableChallenge.startedAt >= TABLE_CHALLENGE_DURATION;
+          if (current.activeGameId && !expiredChallenge) throw new HttpError(409, "Avsluta det pågående spelet först.");
+          return {
+            ...current,
+            activeGameId: randomUUID(),
+            question: null,
+            tableChallenge: createTableChallenge(parsed.data.table),
+          };
+        });
+        return json(publicPlayer(player));
+      }
+      if (method === "POST" && id === "table" && action === "answer") {
+        const parsed = answerInputSchema.safeParse(await readBody(request));
+        if (!parsed.success) throw new HttpError(400, "Skriv in ett svar mellan 0 och 144.");
+        let result: { correct: boolean; correctAnswer: number; complete: boolean; expired: boolean } | undefined;
+        let earnedPoints = 0;
+        const player = await repo.updatePlayer(key, actor.email, (current) => {
+          const challenge = current.tableChallenge;
+          if (!current.activeGameId || !challenge || challenge.questionId !== parsed.data.questionId) {
+            throw new HttpError(409, "Frågan är inte längre aktiv. Starta tabellutmaningen igen.");
+          }
+          const correctAnswer = challenge.table * challenge.factors[challenge.index];
+          const correct = parsed.data.answer === correctAnswer;
+          const expired = Date.now() - challenge.startedAt >= TABLE_CHALLENGE_DURATION;
+          const answered = {
+            ...current,
+            answeredQuestions: current.answeredQuestions + 1,
+            correctAnswers: current.correctAnswers + Number(correct),
+          };
+          if (expired) {
+            result = { correct, correctAnswer, complete: false, expired: true };
+            return { ...answered, activeGameId: null, tableChallenge: null };
+          }
+          if (!correct) {
+            result = { correct, correctAnswer, complete: false, expired: false };
+            return { ...answered, tableChallenge: createTableChallenge(challenge.table) };
+          }
+          if (challenge.index === challenge.factors.length - 1) {
+            earnedPoints = challenge.table >= 6 && challenge.table <= 9 || challenge.table === 12 ? 10 : 5;
+            result = { correct, correctAnswer, complete: true, expired: false };
+            return { ...answered, points: current.points + earnedPoints, activeGameId: null, tableChallenge: null };
+          }
+          result = { correct, correctAnswer, complete: false, expired: false };
+          return {
+            ...answered,
+            tableChallenge: {
+              ...challenge,
+              index: challenge.index + 1,
+              questionId: randomUUID(),
+            },
+          };
+        });
+        return json({ game: publicPlayer(player), ...result, earnedPoints });
+      }
       if (method === "POST" && id === "start" && !action) {
         const player = await repo.updatePlayer(key, actor.email, (current) => {
           if (current.activeGameId) throw new HttpError(409, "Spelet är redan igång.");
-          return { ...current, activeGameId: randomUUID(), question: createQuestion() };
+          return { ...current, activeGameId: randomUUID(), question: createQuestion(), tableChallenge: null };
         });
         return json(publicPlayer(player));
       }
       if (method === "POST" && id === "next" && !action) {
         const player = await repo.updatePlayer(key, actor.email, (current) => {
-          if (!current.activeGameId) throw new HttpError(409, "Starta ett nytt spel först.");
+          if (!current.activeGameId || current.tableChallenge) throw new HttpError(409, "Starta ett nytt spel först.");
           if (current.question) return current;
           return { ...current, question: createQuestion() };
         });
@@ -149,7 +238,7 @@ export async function handle(request: HttpRequest, context: InvocationContext): 
         let result: { correct: boolean; correctAnswer: number; earnedPoints: number } | undefined;
         const player = await repo.updatePlayer(key, actor.email, (current) => {
           const question = current.question;
-          if (!current.activeGameId || !question || question.id !== parsed.data.questionId) {
+          if (!current.activeGameId || current.tableChallenge || !question || question.id !== parsed.data.questionId) {
             throw new HttpError(409, "Frågan är inte längre aktiv. Hämta nästa fråga.");
           }
           const correctAnswer = question.left * question.right;
@@ -171,7 +260,7 @@ export async function handle(request: HttpRequest, context: InvocationContext): 
         const player = await repo.updatePlayer(key, actor.email, (current) => {
           if (!current.activeGameId) return current;
           penalty = Math.min(2, current.points);
-          return { ...current, points: current.points - penalty, activeGameId: null, question: null };
+          return { ...current, points: current.points - penalty, activeGameId: null, question: null, tableChallenge: null };
         });
         return json({ game: publicPlayer(player), penalty });
       }
