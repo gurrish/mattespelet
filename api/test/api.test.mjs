@@ -192,8 +192,26 @@ test("authenticated player can play, earn points, and redeem an admin-created re
     challengeGame = tableResult.game;
   }
   assert.equal(tableResult.complete, true);
-  assert.equal(tableResult.earnedPoints, 5);
-  assert.equal(challengeGame.points, tablePointsBefore + 15);
+  assert.equal(tableResult.earnedPoints, 1);
+  assert.equal(challengeGame.points, tablePointsBefore + 11);
+
+  const secondEasyChallengeResponse = await handle(request("/api/game/table/start", "POST", {
+    ...playerHeaders,
+    "content-type": "application/json",
+  }, JSON.stringify({ table: 2 })), context);
+  challengeGame = await secondEasyChallengeResponse.json();
+  for (let index = 0; index < 12; index++) {
+    const current = challengeGame.tableChallenge;
+    const response = await handle(request("/api/game/table/answer", "POST", {
+      ...playerHeaders,
+      "content-type": "application/json",
+    }, JSON.stringify({ questionId: current.questionId, answer: 2 * current.factor })), context);
+    tableResult = await response.json();
+    challengeGame = tableResult.game;
+  }
+  assert.equal(tableResult.complete, true);
+  assert.equal(tableResult.earnedPoints, 1);
+  assert.equal(challengeGame.points, tablePointsBefore + 12);
 
   const expiringChallenge = await handle(request("/api/game/table/start", "POST", {
     ...playerHeaders,

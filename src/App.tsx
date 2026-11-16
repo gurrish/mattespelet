@@ -47,6 +47,30 @@ export default function App() {
     if (account.isAdmin) setRedemptions(await getRedemptions());
   }
 
+  function leaveGame(keepalive = false) {
+    if (forfeitReported.current) return;
+    forfeitReported.current = true;
+    if (!keepalive) {
+      setBusy(true);
+      setError("");
+      setNotice("");
+    }
+    void forfeitGame(keepalive).then(({ game: updated, penalty }) => {
+      setGame(updated);
+      setLastResult(null);
+      setTableResult(null);
+      setAnswer("");
+      setNotice(penalty
+        ? `Spelet avslutades. ${penalty} poäng drogs av.`
+        : "Spelet avslutades.");
+    }).catch((cause: unknown) => {
+      forfeitReported.current = false;
+      setError(messageOf(cause, "Spelet kunde inte avslutas."));
+    }).finally(() => {
+      if (!keepalive) setBusy(false);
+    });
+  }
+
   useEffect(() => {
     void refresh().catch((cause: unknown) => setError(messageOf(cause, "Spelet kunde inte hämtas.")))
       .finally(() => setLoading(false));
@@ -54,28 +78,15 @@ export default function App() {
 
   useEffect(() => {
     if (!viewer.isPlayer || !game?.isPlaying) return;
-    const endGame = () => {
-      if (forfeitReported.current) return;
-      forfeitReported.current = true;
-      void forfeitGame(true).then(({ game: updated, penalty }) => {
-        setGame(updated);
-        setLastResult(null);
-        setAnswer("");
-        setNotice(penalty
-          ? `Du lämnade spelet. Spelet är slut och ${penalty} poäng drogs av.`
-          : "Du lämnade spelet. Spelet är slut.");
-      }).catch((cause: unknown) => {
-        setError(messageOf(cause, "Spelet kunde inte avslutas."));
-      });
-    };
     const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden") endGame();
+      if (document.visibilityState === "hidden") leaveGame(true);
     };
+    const onPageHide = () => leaveGame(true);
     document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("pagehide", endGame);
+    window.addEventListener("pagehide", onPageHide);
     return () => {
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("pagehide", endGame);
+      window.removeEventListener("pagehide", onPageHide);
     };
   }, [viewer.isPlayer, game?.isPlaying]);
 
@@ -245,16 +256,16 @@ export default function App() {
   }
 
   return <div className="app-shell">
-    {!(viewer.isPlayer && game?.isPlaying) && <header className="topbar">
+    <header className="topbar">
       <a className="brand" href="#" aria-label="Mattespelet – startsida"><span className="brand-icon"><Sparkles size={21} /></span><span>Matte<strong>spelet</strong></span></a>
       <span className="topbar-note">LITEN HJÄRNA · STORA TAL</span>
       {viewer.signedIn
         ? <button className="account-button" onClick={signOut}><LogOut size={17} /> Logga ut</button>
         : <button className="account-button" onClick={signIn}><LogIn size={17} /> Logga in</button>}
-    </header>}
+    </header>
 
     <main>
-      <section className="hero">
+      {!(viewer.isPlayer && game?.isPlaying) && <section className="hero">
         <div className="hero-copy">
           <span className="eyebrow"><span className="status-dot" /> MULTIPLIKATION 1–12</span>
           <h1>Räkna dig<br /><em>till drömmen!</em></h1>
@@ -266,7 +277,7 @@ export default function App() {
           <span className="hero-spark">✦</span>
         </div>
         <div className="hero-foot"><span>1 POÄNG · LÄTT</span><span>2 POÄNG · KLURIG</span><span>3 POÄNG · SUPERKLURIG</span></div>
-      </section>
+      </section>}
 
       {loading
         ? <div className="loading-card">Hämtar spelet…</div>
@@ -284,10 +295,16 @@ export default function App() {
               <p>Be en vuxen lägga till din e-postadress i spelets spelarlista.</p>
             </section>
             : <div className="workspace">
+              {error && <div className="alert" role="alert">{error}<button onClick={() => setError("")} aria-label="Stäng felmeddelande"><X size={17} /></button></div>}
+              {notice && <div className="success-message" role="status">{notice}<button onClick={() => setNotice("")} aria-label="Stäng meddelande"><X size={17} /></button></div>}
+
               {viewer.isPlayer && game && <section className="game-card">
                 <div className="game-heading">
                   <div><span className="eyebrow">DIN MATTEUTMANING</span><h2>{game.isPlaying ? "Vad blir svaret?" : "Redo att spela?"}</h2></div>
-                  <div className="score-pill"><Trophy size={20} /><span><strong>{game.points}</strong><small>POÄNG</small></span></div>
+                  <div className="game-controls">
+                    {game.isPlaying && <button className="button button-secondary exit-game-button" onClick={() => leaveGame()} disabled={busy}>Avsluta spelet</button>}
+                    <div className="score-pill"><Trophy size={20} /><span><strong>{game.points}</strong><small>POÄNG</small></span></div>
+                  </div>
                 </div>
 
                 {game.isPlaying && game.question
@@ -351,7 +368,7 @@ export default function App() {
                       <div className="table-buttons">
                         {Array.from({ length: 12 }, (_, index) => index + 1).map((table) =>
                           <button className="button button-secondary" key={table} onClick={() => beginTableChallenge(table)} disabled={busy}>
-                            {table}:ans · {table >= 6 && table <= 9 || table === 12 ? 10 : 5} p
+                            {table}:ans · {table <= 2 ? 1 : table >= 6 && table <= 9 || table === 12 ? 10 : 5} p
                           </button>,
                         )}
                       </div>
@@ -402,8 +419,6 @@ export default function App() {
                 </div>
               </section>}
 
-              {error && <div className="alert" role="alert">{error}<button onClick={() => setError("")} aria-label="Stäng felmeddelande"><X size={17} /></button></div>}
-              {notice && <div className="success-message" role="status">{notice}<button onClick={() => setNotice("")} aria-label="Stäng meddelande"><X size={17} /></button></div>}
             </div>}
     </main>
 

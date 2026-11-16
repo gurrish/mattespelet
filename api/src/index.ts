@@ -201,7 +201,7 @@ export async function handle(request: HttpRequest, context: InvocationContext): 
             return { ...answered, tableChallenge: createTableChallenge(challenge.table) };
           }
           if (challenge.index === challenge.factors.length - 1) {
-            earnedPoints = challenge.table >= 6 && challenge.table <= 9 || challenge.table === 12 ? 10 : 5;
+            earnedPoints = challenge.table <= 2 ? 1 : challenge.table >= 6 && challenge.table <= 9 || challenge.table === 12 ? 10 : 5;
             result = { correct, correctAnswer, complete: true, expired: false };
             return { ...answered, points: current.points + earnedPoints, activeGameId: null, tableChallenge: null };
           }
