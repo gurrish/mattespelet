@@ -18,6 +18,7 @@ import type { AnswerResult, GameState, Redemption, Reward, RewardInput, Viewer }
 
 const emptyViewer: Viewer = { signedIn: false, email: null, isAdmin: false, isPlayer: false };
 const emptyReward = (): RewardInput => ({ name: "", cost: 10, active: true });
+const MAX_REWARD_COST = 5000;
 
 export default function App() {
   const [viewer, setViewer] = useState(emptyViewer);
@@ -144,8 +145,8 @@ export default function App() {
   function saveReward(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const name = rewardDraft.name.trim();
-    if (!name || !Number.isInteger(rewardDraft.cost) || rewardDraft.cost < 1 || rewardDraft.cost > 500) {
-      setError("Ange ett namn och ett poängpris mellan 1 och 500.");
+    if (!name || !Number.isInteger(rewardDraft.cost) || rewardDraft.cost < 1 || rewardDraft.cost > MAX_REWARD_COST) {
+      setError(`Ange ett namn och ett poängpris mellan 1 och ${MAX_REWARD_COST}.`);
       return;
     }
     const input = { ...rewardDraft, name };
@@ -196,13 +197,13 @@ export default function App() {
   }
 
   return <div className="app-shell">
-    <header className="topbar">
+    {!(viewer.isPlayer && game?.isPlaying) && <header className="topbar">
       <a className="brand" href="#" aria-label="Mattespelet – startsida"><span className="brand-icon"><Sparkles size={21} /></span><span>Matte<strong>spelet</strong></span></a>
       <span className="topbar-note">LITEN HJÄRNA · STORA TAL</span>
       {viewer.signedIn
         ? <button className="account-button" onClick={signOut}><LogOut size={17} /> Logga ut</button>
         : <button className="account-button" onClick={signIn}><LogIn size={17} /> Logga in</button>}
-    </header>
+    </header>}
 
     <main>
       <section className="hero">
@@ -292,7 +293,7 @@ export default function App() {
                 <div className="section-heading"><div><span className="eyebrow">VUXENLÄGE</span><h2>Hantera belöningar</h2></div><ShieldAlert size={25} /></div>
                 <form className="reward-form" onSubmit={saveReward}>
                   <label className="form-field reward-name-field"><span>Namn på belöningen</span><input maxLength={48} value={rewardDraft.name} onChange={(event) => setRewardDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Till exempel JumpYard" required /></label>
-                  <label className="form-field reward-cost-field"><span>Poängpris</span><input type="number" min={1} max={500} step={1} value={rewardDraft.cost} onChange={(event) => setRewardDraft((current) => ({ ...current, cost: Number(event.target.value) }))} required /></label>
+                  <label className="form-field reward-cost-field"><span>Poängpris</span><input type="number" min={1} max={MAX_REWARD_COST} step={1} value={rewardDraft.cost} onChange={(event) => setRewardDraft((current) => ({ ...current, cost: Number(event.target.value) }))} required /></label>
                   <label className="active-checkbox"><input type="checkbox" checked={rewardDraft.active} onChange={(event) => setRewardDraft((current) => ({ ...current, active: event.target.checked }))} /> Visas i spelet</label>
                   <div className="form-actions"><button className="button button-primary" type="submit" disabled={busy}>{editingRewardId ? <Pencil size={16} /> : <Plus size={18} />}{editingRewardId ? " Spara ändringar" : " Lägg till belöning"}</button>
                     {editingRewardId && <button className="button button-secondary" type="button" onClick={() => { setEditingRewardId(""); setRewardDraft(emptyReward()); }}>Avbryt</button>}</div>

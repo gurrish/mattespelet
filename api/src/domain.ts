@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const rewardInputSchema = z.object({
   name: z.string().trim().min(1).max(48),
-  cost: z.number().int().min(1).max(500),
+  cost: z.number().int().min(1).max(5000),
   active: z.boolean().default(true),
 }).strict();
 

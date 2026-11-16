@@ -43,6 +43,19 @@ test("authenticated player can play, earn points, and redeem an admin-created re
   assert.equal(createdReward.status, 201);
   const reward = await createdReward.json();
 
+  const highCostReward = await handle(request("/api/rewards", "POST", {
+    ...adminHeaders,
+    "content-type": "application/json",
+  }, JSON.stringify({ name: "Stor belöning", cost: 5000, active: true })), context);
+  assert.equal(highCostReward.status, 201);
+  assert.equal((await highCostReward.json()).cost, 5000);
+
+  const overLimitReward = await handle(request("/api/rewards", "POST", {
+    ...adminHeaders,
+    "content-type": "application/json",
+  }, JSON.stringify({ name: "För dyr", cost: 5001, active: true })), context);
+  assert.equal(overLimitReward.status, 400);
+
   const firstGame = await handle(request("/api/game/start", "POST", playerHeaders), context);
   assert.equal(firstGame.status, 200);
   const initialGame = await firstGame.json();
@@ -113,7 +126,7 @@ test("authenticated player can play, earn points, and redeem an admin-created re
   assert.equal(redemption.redemption.rewardName, "Godis");
 
   const listedRewards = await handle(request("/api/rewards", "GET", playerHeaders), context);
-  assert.equal((await listedRewards.json()).length, 1);
+  assert.equal((await listedRewards.json()).length, 2);
   const listedRedemptions = await handle(request("/api/redemptions", "GET", adminHeaders), context);
   assert.equal((await listedRedemptions.json()).length, 1);
 });
