@@ -4,9 +4,13 @@ import {
   PlayerConflictError,
   answerInputSchema,
   forfeitInputSchema,
+  gameStartSchema,
+  operationsInputSchema,
+  playerInputSchema,
   rewardInputSchema,
   tableStartSchema,
   type GameQuestion,
+  type Operation,
   type PlayerState,
   type TableChallenge,
 } from "./domain.js";
@@ -50,8 +54,10 @@ function isAdmin(email: string | undefined): boolean {
   return Boolean(email && configuredEmails("GLOBAL_ADMIN_EMAILS").has(email.toLowerCase()));
 }
 
-function isPlayer(email: string | undefined): boolean {
-  return Boolean(email && configuredEmails("PLAYER_EMAILS").has(email.toLowerCase()));
+async function isPlayer(email: string | undefined, repo: ReturnType<typeof getRepository>): Promise<boolean> {
+  if (!email) return false;
+  const explicitAccess = await repo.getPlayerAccess(email.toLowerCase());
+  return explicitAccess ?? configuredEmails("PLAYER_EMAILS").has(email.toLowerCase());
 }
 
 function requireIdentity(request: HttpRequest): Identity {
@@ -66,9 +72,9 @@ function requireAdmin(request: HttpRequest): Identity {
   return actor;
 }
 
-function requirePlayer(request: HttpRequest): Identity {
+async function requirePlayer(request: HttpRequest, repo: ReturnType<typeof getRepository>): Promise<Identity> {
   const actor = requireIdentity(request);
-  if (!isPlayer(actor.email)) throw new HttpError(403, "E-postadressen har inte tillgång till spelkontot.");
+  if (!await isPlayer(actor.email, repo)) throw new HttpError(403, "E-postadressen har inte tillgång till spelkontot.");
   return actor;
 }
 
@@ -96,13 +102,40 @@ function responsePath(pathname: string): string[] {
   }
 }
 
-function createQuestion(): GameQuestion {
-  const left = randomInt(1, 13);
-  const right = randomInt(1, 13);
-  const high = Math.max(left, right);
-  const low = Math.min(left, right);
-  const points = high >= 9 && low >= 3 ? 3 : high >= 5 && low >= 2 ? 2 : 1;
-  return { id: randomUUID(), left, right, points };
+function createQuestion(operations: Operation[]): GameQuestion {
+  const operation = operations[randomInt(operations.length)];
+  let left: number;
+  let right: number;
+  let points: number;
+
+  if (operation === "multiply") {
+    left = randomInt(1, 13);
+    right = randomInt(1, 13);
+    const high = Math.max(left, right);
+    const low = Math.min(left, right);
+    points = high >= 9 && low >= 3 ? 3 : high >= 5 && low >= 2 ? 2 : 1;
+  } else if (operation === "add") {
+    left = randomInt(1, 13);
+    right = randomInt(1, 13);
+    points = questionPoints(left, right);
+  } else if (operation === "subtract") {
+    left = randomInt(1, 13);
+    right = randomInt(1, left + 1);
+    points = questionPoints(left, right);
+  } else {
+    right = randomInt(2, 13);
+    const quotient = randomInt(1, 13);
+    const remainder = randomInt(right);
+    left = quotient * right + remainder;
+    points = questionPoints(quotient, right);
+  }
+
+  return { id: randomUUID(), left, right, points, operation };
+}
+
+function questionPoints(left: number, right: number): number {
+  const largest = Math.max(left, right);
+  return largest >= 10 ? 3 : largest >= 5 ? 2 : 1;
 }
 
 const TABLE_CHALLENGE_DURATION = 60_000;
@@ -151,17 +184,20 @@ export async function handle(request: HttpRequest, context: InvocationContext): 
         signedIn: Boolean(actor),
         email: actor?.email ?? null,
         isAdmin: isAdmin(actor?.email),
-        isPlayer: isPlayer(actor?.email),
+        isPlayer: await isPlayer(actor?.email, repo),
       });
     }
 
     if (resource === "game") {
-      const actor = requirePlayer(request);
+      const actor = await requirePlayer(request, repo);
       const key = playerKey(actor.id);
       if (method === "GET" && !id) return json(publicPlayer(await repo.getPlayer(key, actor.email)));
       if (method === "POST" && id === "table" && action === "start") {
         const parsed = tableStartSchema.safeParse(await readBody(request));
-        if (!parsed.success) throw new HttpError(400, "Välj en gångertabell mellan 1 och 12.");
+        if (!parsed.success) throw new HttpError(400, "Välj en gångertabell mellan 1 och 10.");
+        if (!(await repo.getEnabledOperations()).includes("multiply")) {
+          throw new HttpError(409, "Tabellutmaningen är inte aktiverad.");
+        }
         const player = await repo.updatePlayer(key, actor.email, (current) => {
           const expiredChallenge = current.tableChallenge
             && Date.now() - current.tableChallenge.startedAt >= TABLE_CHALLENGE_DURATION;
@@ -202,7 +238,7 @@ export async function handle(request: HttpRequest, context: InvocationContext): 
             return { ...answered, tableChallenge: createTableChallenge(challenge.table) };
           }
           if (challenge.index === challenge.factors.length - 1) {
-            earnedPoints = challenge.table <= 2 ? 1 : challenge.table >= 6 && challenge.table <= 9 || challenge.table === 12 ? 10 : 5;
+            earnedPoints = challenge.table <= 2 ? 1 : challenge.table >= 6 && challenge.table <= 9 ? 10 : 5;
             result = { correct, correctAnswer, complete: true, expired: false };
             return { ...answered, points: current.points + earnedPoints, activeGameId: null, tableChallenge: null };
           }
@@ -219,9 +255,21 @@ export async function handle(request: HttpRequest, context: InvocationContext): 
         return json({ game: publicPlayer(player), ...result, earnedPoints });
       }
       if (method === "POST" && id === "start" && !action) {
+        const parsed = gameStartSchema.safeParse(await readBody(request));
+        if (!parsed.success) throw new HttpError(400, "Välj minst ett räknesätt.");
+        const enabledOperations = await repo.getEnabledOperations();
+        if (parsed.data.operations.some((operation) => !enabledOperations.includes(operation))) {
+          throw new HttpError(400, "Ett valt räknesätt är inte aktiverat.");
+        }
         const player = await repo.updatePlayer(key, actor.email, (current) => {
           if (current.activeGameId) throw new HttpError(409, "Spelet är redan igång.");
-          return { ...current, activeGameId: randomUUID(), question: createQuestion(), tableChallenge: null };
+          return {
+            ...current,
+            activeGameId: randomUUID(),
+            activeOperations: parsed.data.operations,
+            question: createQuestion(parsed.data.operations),
+            tableChallenge: null,
+          };
         });
         return json(publicPlayer(player));
       }
@@ -229,29 +277,39 @@ export async function handle(request: HttpRequest, context: InvocationContext): 
         const player = await repo.updatePlayer(key, actor.email, (current) => {
           if (!current.activeGameId || current.tableChallenge) throw new HttpError(409, "Starta ett nytt spel först.");
           if (current.question) return current;
-          return { ...current, question: createQuestion() };
+          return { ...current, question: createQuestion(current.activeOperations) };
         });
         return json(publicPlayer(player));
       }
       if (method === "POST" && id === "answer" && !action) {
         const parsed = answerInputSchema.safeParse(await readBody(request));
         if (!parsed.success) throw new HttpError(400, "Skriv in ett svar mellan 0 och 144.");
-        let result: { correct: boolean; correctAnswer: number; earnedPoints: number } | undefined;
+        let result: { correct: boolean; correctAnswer: number; correctRemainder: number | null; earnedPoints: number } | undefined;
         const player = await repo.updatePlayer(key, actor.email, (current) => {
           const question = current.question;
           if (!current.activeGameId || current.tableChallenge || !question || question.id !== parsed.data.questionId) {
             throw new HttpError(409, "Frågan är inte längre aktiv. Hämta nästa fråga.");
           }
-          const correctAnswer = question.left * question.right;
-          const correct = parsed.data.answer === correctAnswer;
+          const correctAnswer = question.operation === "multiply"
+            ? question.left * question.right
+            : question.operation === "add"
+              ? question.left + question.right
+              : question.operation === "subtract"
+                ? question.left - question.right
+                : Math.floor(question.left / question.right);
+          const correctRemainder = question.operation === "divide" ? question.left % question.right : null;
+          const correct = parsed.data.answer === correctAnswer
+            && (question.operation === "divide"
+              ? parsed.data.remainder === correctRemainder
+              : parsed.data.remainder === undefined);
           const earnedPoints = correct ? question.points : 0;
-          result = { correct, correctAnswer, earnedPoints };
+          result = { correct, correctAnswer, correctRemainder, earnedPoints };
           return {
             ...current,
             points: current.points + earnedPoints,
             correctAnswers: current.correctAnswers + Number(correct),
             answeredQuestions: current.answeredQuestions + 1,
-            question: correct ? createQuestion() : null,
+            question: correct ? createQuestion(current.activeOperations) : null,
           };
         });
         return json({ game: publicPlayer(player), ...result });
@@ -270,10 +328,53 @@ export async function handle(request: HttpRequest, context: InvocationContext): 
       throw new HttpError(404, "API-adressen hittades inte.");
     }
 
+    if (resource === "players") {
+      requireAdmin(request);
+      if (method === "GET" && !id) {
+        const players = new Map([...configuredEmails("PLAYER_EMAILS")].map((email) => [email, true]));
+        for (const access of await repo.listPlayerAccess()) players.set(access.email, access.allowed);
+        return json([...players].filter(([, allowed]) => allowed).map(([email]) => email).sort());
+      }
+      if (method === "POST" && !id) {
+        const parsed = playerInputSchema.safeParse(await readBody(request));
+        if (!parsed.success) throw new HttpError(400, "Ange en giltig e-postadress.");
+        const players = new Map([...configuredEmails("PLAYER_EMAILS")].map((email) => [email, true]));
+        for (const access of await repo.listPlayerAccess()) players.set(access.email, access.allowed);
+        if (!players.get(parsed.data.email) && [...players.values()].filter(Boolean).length >= 100) {
+          throw new HttpError(409, "Gränsen på 100 spelare har nåtts.");
+        }
+        await repo.setPlayerAccess(parsed.data.email, true);
+        return json({ email: parsed.data.email }, 201);
+      }
+      if (method === "DELETE" && id) {
+        const parsed = playerInputSchema.safeParse({ email: id });
+        if (!parsed.success) throw new HttpError(400, "Ange en giltig e-postadress.");
+        await repo.setPlayerAccess(parsed.data.email, false);
+        return json({ ok: true });
+      }
+      throw new HttpError(404, "API-adressen hittades inte.");
+    }
+
+    if (resource === "settings" && id === "operations") {
+      const actor = requireIdentity(request);
+      if (!isAdmin(actor.email) && !await isPlayer(actor.email, repo)) {
+        throw new HttpError(403, "Kontot saknar behörighet att använda spelets inställningar.");
+      }
+      if (method === "GET" && !action) return json(await repo.getEnabledOperations());
+      if (method === "PUT" && !action) {
+        requireAdmin(request);
+        const parsed = operationsInputSchema.safeParse(await readBody(request));
+        if (!parsed.success) throw new HttpError(400, "Välj minst ett räknesätt.");
+        await repo.setEnabledOperations(parsed.data.operations);
+        return json(parsed.data.operations);
+      }
+      throw new HttpError(404, "API-adressen hittades inte.");
+    }
+
     if (resource === "rewards") {
       const actor = requireIdentity(request);
       const admin = isAdmin(actor.email);
-      const player = isPlayer(actor.email);
+      const player = await isPlayer(actor.email, repo);
       if (!admin && !player) throw new HttpError(403, "Kontot saknar behörighet att använda belöningarna.");
       if (method === "GET" && !id) {
         const rewards = await repo.listRewards();

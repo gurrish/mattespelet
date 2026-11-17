@@ -1,4 +1,4 @@
-import type { AnswerResult, GameState, Redemption, Reward, RewardInput, Viewer } from "../types";
+import type { AnswerResult, GameState, Operation, Redemption, Reward, RewardInput, Viewer } from "../types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -17,12 +17,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const getViewer = () => request<Viewer>("/api/me");
 export const getGame = () => request<GameState>("/api/game");
-export const startGame = () => request<GameState>("/api/game/start", { method: "POST" });
+export const startGame = (operations: Operation[]) =>
+  request<GameState>("/api/game/start", { method: "POST", body: JSON.stringify({ operations }) });
 export const startTableChallenge = (table: number) =>
   request<GameState>("/api/game/table/start", { method: "POST", body: JSON.stringify({ table }) });
 export const nextQuestion = () => request<GameState>("/api/game/next", { method: "POST" });
-export const submitAnswer = (questionId: string, answer: number) =>
-  request<AnswerResult>("/api/game/answer", { method: "POST", body: JSON.stringify({ questionId, answer }) });
+export const submitAnswer = (questionId: string, answer: number, remainder?: number) =>
+  request<AnswerResult>("/api/game/answer", {
+    method: "POST",
+    body: JSON.stringify({ questionId, answer, ...(remainder === undefined ? {} : { remainder }) }),
+  });
 export const submitTableAnswer = (questionId: string, answer: number) =>
   request<{
     game: GameState;
@@ -50,3 +54,11 @@ export const deleteReward = (id: string) =>
 export const redeemReward = (id: string) =>
   request<{ points: number; redemption: Redemption }>(`/api/rewards/${encodeURIComponent(id)}/redeem`, { method: "POST" });
 export const getRedemptions = () => request<Redemption[]>("/api/redemptions");
+export const getPlayers = () => request<string[]>("/api/players");
+export const addPlayer = (email: string) =>
+  request<{ email: string }>("/api/players", { method: "POST", body: JSON.stringify({ email }) });
+export const removePlayer = (email: string) =>
+  request<{ ok: true }>(`/api/players/${encodeURIComponent(email)}`, { method: "DELETE" });
+export const getEnabledOperations = () => request<Operation[]>("/api/settings/operations");
+export const saveEnabledOperations = (operations: Operation[]) =>
+  request<Operation[]>("/api/settings/operations", { method: "PUT", body: JSON.stringify({ operations }) });

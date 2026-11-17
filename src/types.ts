@@ -10,7 +10,10 @@ export interface GameQuestion {
   left: number;
   right: number;
   points: number;
+  operation: Operation;
 }
+
+export type Operation = "multiply" | "add" | "subtract" | "divide";
 
 export interface GameState {
   points: number;
@@ -55,5 +58,6 @@ export interface AnswerResult {
   game: GameState;
   correct: boolean;
   correctAnswer: number;
+  correctRemainder: number | null;
   earnedPoints: number;
 }

@@ -2,32 +2,55 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowRight, Check, Clock, Gift, LogIn, LogOut, Pencil, Plus, ShieldAlert, Sparkles, Star, Trash2, Trophy, X } from "lucide-react";
 import {
   createReward,
+  addPlayer,
   deleteReward,
   forfeitGame,
   getGame,
+  getEnabledOperations,
+  getPlayers,
   getRedemptions,
   getRewards,
   getViewer,
   nextQuestion,
+  removePlayer,
   redeemReward,
+  saveEnabledOperations,
   startGame,
   startTableChallenge,
   submitAnswer,
   submitTableAnswer,
   updateReward,
 } from "./lib/api";
-import type { AnswerResult, GameState, Redemption, Reward, RewardInput, Viewer } from "./types";
+import type { AnswerResult, GameState, Operation, Redemption, Reward, RewardInput, Viewer } from "./types";
 
 const emptyViewer: Viewer = { signedIn: false, email: null, isAdmin: false, isPlayer: false };
 const emptyReward = (): RewardInput => ({ name: "", cost: 10, active: true });
 const MAX_REWARD_COST = 5000;
+const operationLabels: Record<Operation, string> = {
+  multiply: "Multiplikation (×)",
+  add: "Addition (+)",
+  subtract: "Subtraktion (−)",
+  divide: "Division (÷)",
+};
+const operationSymbols: Record<Operation, string> = {
+  multiply: "×",
+  add: "+",
+  subtract: "−",
+  divide: "÷",
+};
 
 export default function App() {
   const [viewer, setViewer] = useState(emptyViewer);
   const [game, setGame] = useState<GameState | null>(null);
   const [rewards, setRewards] = useState<Reward[]>([]);
   const [redemptions, setRedemptions] = useState<Redemption[]>([]);
+  const [players, setPlayers] = useState<string[]>([]);
+  const [playerEmail, setPlayerEmail] = useState("");
+  const [enabledOperations, setEnabledOperations] = useState<Operation[]>(["multiply"]);
+  const [operationDraft, setOperationDraft] = useState<Operation[]>(["multiply"]);
+  const [selectedOperations, setSelectedOperations] = useState<Operation[]>(["multiply"]);
   const [answer, setAnswer] = useState("");
+  const [remainder, setRemainder] = useState("");
   const [lastResult, setLastResult] = useState<AnswerResult | null>(null);
   const [tableResult, setTableResult] = useState<{ correct: boolean; correctAnswer: number; expired: boolean } | null>(null);
   const [clock, setClock] = useState(Date.now());
@@ -42,9 +65,16 @@ export default function App() {
   async function refresh() {
     const account = await getViewer();
     setViewer(account);
-    if (account.isPlayer || account.isAdmin) setRewards(await getRewards());
+    if (account.isPlayer || account.isAdmin) {
+      const operations = await getEnabledOperations();
+      setEnabledOperations(operations);
+      setOperationDraft(operations);
+      setSelectedOperations(operations);
+      setRewards(await getRewards());
+    }
     if (account.isPlayer) setGame(await getGame());
     if (account.isAdmin) setRedemptions(await getRedemptions());
+    if (account.isAdmin) setPlayers(await getPlayers());
   }
 
   function leaveGame(keepalive = false) {
@@ -60,6 +90,7 @@ export default function App() {
       setLastResult(null);
       setTableResult(null);
       setAnswer("");
+      setRemainder("");
       setNotice(penalty
         ? `Spelet avslutades. ${penalty} poäng drogs av.`
         : "Spelet avslutades.");
@@ -111,7 +142,7 @@ export default function App() {
 
   function signIn() {
     if (import.meta.env.DEV) {
-      const email = window.prompt("Ange en e-postadress som finns i PLAYER_EMAILS eller GLOBAL_ADMIN_EMAILS:");
+      const email = window.prompt("Ange en e-postadress som finns i spelarlistan eller administratörslistan:");
       if (email) {
         localStorage.setItem("mattespelet-dev-email", email.trim().toLowerCase());
         window.location.reload();
@@ -131,12 +162,13 @@ export default function App() {
   }
 
   function beginGame() {
-    void run(startGame, (updated) => {
+    void run(() => startGame(selectedOperations), (updated) => {
       forfeitReported.current = false;
       setGame(updated);
       setLastResult(null);
       setTableResult(null);
       setAnswer("");
+      setRemainder("");
     }, "Spelet kunde inte starta.");
   }
 
@@ -149,6 +181,7 @@ export default function App() {
         setLastResult(null);
         setTableResult(null);
         setAnswer("");
+        setRemainder("");
         setClock(Date.now());
       },
       "Tabellutmaningen kunde inte starta.",
@@ -160,24 +193,71 @@ export default function App() {
     setLastResult(null);
     setTableResult(null);
     setAnswer("");
+    setRemainder("");
   }
 
   function sendAnswer(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const value = Number(answer.trim());
-    if (!answer.trim() || !Number.isInteger(value) || value < 0 || value > 144 || !game?.question) {
-      setError("Skriv ett heltal mellan 0 och 144.");
+    const isDivision = game?.question?.operation === "divide";
+    const remainderValue = Number(remainder.trim());
+    if (!answer.trim() || !Number.isInteger(value) || value < 0 || value > 144 || !game?.question
+      || (isDivision && (!remainder.trim() || !Number.isInteger(remainderValue) || remainderValue < 0 || remainderValue > 11))) {
+      setError(isDivision ? "Skriv en kvot mellan 0 och 144 och en rest mellan 0 och 11." : "Skriv ett heltal mellan 0 och 144.");
       return;
     }
     void run(
-      () => submitAnswer(game.question!.id, value),
+      () => submitAnswer(game.question!.id, value, isDivision ? remainderValue : undefined),
       (result) => {
         setGame(result.game);
         setLastResult(result.correct ? null : result);
         setAnswer("");
+        setRemainder("");
         if (result.correct) setNotice(`Rätt! Du fick ${result.earnedPoints} poäng.`);
       },
       "Svaret kunde inte skickas.",
+    );
+  }
+
+  function toggleOperation(list: Operation[], operation: Operation, checked: boolean): Operation[] {
+    return checked
+      ? [...list, operation]
+      : list.filter((item) => item !== operation);
+  }
+
+  function saveOperations() {
+    void run(
+      () => saveEnabledOperations(operationDraft),
+      (saved) => {
+        setEnabledOperations(saved);
+        setOperationDraft(saved);
+        setSelectedOperations((current) => current.filter((operation) => saved.includes(operation)));
+        setNotice("Räknesätten har sparats.");
+      },
+      "Räknesätten kunde inte sparas.",
+    );
+  }
+
+  function addAllowedPlayer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const email = playerEmail.trim().toLowerCase();
+    void run(
+      () => addPlayer(email),
+      ({ email: addedEmail }) => {
+        setPlayers((current) => [...new Set([...current, addedEmail])].sort());
+        setPlayerEmail("");
+        setNotice(`${addedEmail} får nu spela.`);
+      },
+      "Spelaren kunde inte läggas till.",
+    );
+  }
+
+  function removeAllowedPlayer(email: string) {
+    if (!window.confirm(`Ta bort ${email} från spelarlistan?`)) return;
+    void run(
+      () => removePlayer(email),
+      () => setPlayers((current) => current.filter((player) => player !== email)),
+      "Spelaren kunde inte tas bort.",
     );
   }
 
@@ -312,12 +392,16 @@ export default function App() {
                   ? <div className="question-area">
                     <div className="question-card">
                       <span className="question-label">FRÅGA VÄRD {game.question.points} {game.question.points === 1 ? "POÄNG" : "POÄNG"}</span>
-                      <div className="question">{game.question.left}<span>×</span>{game.question.right}<span>=</span><b>?</b></div>
+                      <div className="question">{game.question.left}<span>{operationSymbols[game.question.operation]}</span>{game.question.right}<span>=</span><b>?</b></div>
                     </div>
                     <form className="answer-form" onSubmit={sendAnswer}>
-                      <label htmlFor="answer">Skriv ditt svar</label>
+                      <label htmlFor="answer">{game.question.operation === "divide" ? "Ange kvot och rest" : "Skriv ditt svar"}</label>
                       <div className="answer-row">
-                        <input id="answer" inputMode="numeric" pattern="[0-9]*" autoComplete="off" maxLength={3} value={answer} onChange={(event) => setAnswer(event.target.value.replace(/\D/g, ""))} aria-label="Ditt svar" />
+                        <input id="answer" inputMode="numeric" pattern="[0-9]*" autoComplete="off" maxLength={3} value={answer} onChange={(event) => setAnswer(event.target.value.replace(/\D/g, ""))} aria-label={game.question.operation === "divide" ? "Kvot" : "Ditt svar"} />
+                        {game.question.operation === "divide" && <>
+                          <span className="remainder-label">rest</span>
+                          <input id="remainder" inputMode="numeric" pattern="[0-9]*" autoComplete="off" maxLength={2} value={remainder} onChange={(event) => setRemainder(event.target.value.replace(/\D/g, ""))} aria-label="Rest" />
+                        </>}
                         <button className="button button-primary" type="submit" disabled={busy || !answer}><Check size={19} /> Svara</button>
                       </div>
                     </form>
@@ -358,21 +442,33 @@ export default function App() {
                     ? <div className="result-area">
                       {lastResult && <div className={`answer-result${lastResult.correct ? " correct" : " incorrect"}`}>
                         <strong>{lastResult.correct ? "Helt rätt! Snyggt jobbat!" : "Inte riktigt den här gången."}</strong>
-                        <span>{lastResult.correct ? `Du fick ${lastResult.earnedPoints} poäng!` : `Rätt svar var ${lastResult.correctAnswer}.`}</span>
+                        <span>{lastResult.correct
+                          ? `Du fick ${lastResult.earnedPoints} poäng!`
+                          : `Rätt svar var ${lastResult.correctAnswer}${lastResult.correctRemainder === null ? "" : ` rest ${lastResult.correctRemainder}`}.`}</span>
                       </div>}
                       <button className="button button-primary next-button" onClick={requestNextQuestion} disabled={busy}>Nästa fråga <ArrowRight size={18} /></button>
                     </div>
                     : <div className="start-area">
-                      <p>Välj ett spelläge. I tabellutmaningen ska du klara alla 12 tal på en minut. Fel svar nollställer klockan.</p>
-                      <button className="button button-primary" onClick={beginGame} disabled={busy}><Sparkles size={19} /> Börja spela</button>
-                      <strong className="table-mode-title">Eller välj en tabell att klara på en minut</strong>
-                      <div className="table-buttons">
-                        {Array.from({ length: 12 }, (_, index) => index + 1).map((table) =>
-                          <button className="button button-secondary" key={table} onClick={() => beginTableChallenge(table)} disabled={busy}>
-                            {table}:ans · {table <= 2 ? 1 : table >= 6 && table <= 9 || table === 12 ? 10 : 5} p
-                          </button>,
+                      <p>Välj ett eller flera räknesätt. Räkna rätt och samla poäng!</p>
+                      <div className="operation-choices">
+                        {enabledOperations.map((operation) =>
+                          <label className="operation-choice" key={operation}>
+                            <input type="checkbox" checked={selectedOperations.includes(operation)} onChange={(event) => setSelectedOperations((current) => toggleOperation(current, operation, event.target.checked))} />
+                            {operationLabels[operation]}
+                          </label>,
                         )}
                       </div>
+                      <button className="button button-primary" onClick={beginGame} disabled={busy || !selectedOperations.length}><Sparkles size={19} /> Börja spela</button>
+                      {enabledOperations.includes("multiply") && <>
+                        <strong className="table-mode-title">Eller välj en tabell att klara på en minut</strong>
+                        <div className="table-buttons">
+                          {Array.from({ length: 10 }, (_, index) => index + 1).map((table) =>
+                            <button className="button button-secondary" key={table} onClick={() => beginTableChallenge(table)} disabled={busy}>
+                              {table}:ans · {table <= 2 ? 1 : table >= 6 && table <= 9 ? 10 : 5} p
+                            </button>,
+                          )}
+                        </div>
+                      </>}
                     </div>}
 
                 <div className="game-stats"><span><Check size={15} /> {game.correctAnswers} rätt</span><span>{game.answeredQuestions} {game.answeredQuestions === 1 ? "fråga" : "frågor"} besvarade</span></div>
@@ -392,6 +488,34 @@ export default function App() {
                     </article>;
                   })}
                   {!rewards.some((reward) => reward.active) && <p className="empty-message">Belöningar kommer snart! Fråga en vuxen. ✨</p>}
+                </div>
+              </section>}
+
+              {viewer.isAdmin && <section className="admin-section">
+                <div className="section-heading"><div><span className="eyebrow">VUXENLÄGE</span><h2>Spelare och räknesätt</h2></div><ShieldAlert size={25} /></div>
+                <form className="player-form" onSubmit={addAllowedPlayer}>
+                  <label className="form-field"><span>Spelarens e-postadress</span><input type="email" maxLength={254} value={playerEmail} onChange={(event) => setPlayerEmail(event.target.value)} placeholder="namn@example.com" required /></label>
+                  <button className="button button-primary" type="submit" disabled={busy}><Plus size={18} /> Lägg till spelare</button>
+                </form>
+                <div className="admin-player-list">
+                  {players.map((email) => <div className="admin-reward" key={email}>
+                    <span className="admin-reward-name">{email}</span>
+                    <button className="icon-button danger" onClick={() => removeAllowedPlayer(email)} disabled={busy} aria-label={`Ta bort ${email} från spelarlistan`}><Trash2 size={17} /></button>
+                  </div>)}
+                  {!players.length && <p className="empty-message">Inga spelare har lagts till ännu.</p>}
+                </div>
+                <div className="operation-settings">
+                  <h3>Räknesätt som spelarna kan välja</h3>
+                  <div className="operation-choices">
+                    {(["multiply", "add", "subtract", "divide"] as Operation[]).map((operation) =>
+                      <label className="operation-choice" key={operation}>
+                        <input type="checkbox" checked={operationDraft.includes(operation)} onChange={(event) => setOperationDraft((current) => toggleOperation(current, operation, event.target.checked))} />
+                        {operationLabels[operation]}
+                      </label>,
+                    )}
+                  </div>
+                  <button className="button button-primary" type="button" onClick={saveOperations} disabled={busy || !operationDraft.length}>Spara räknesätt</button>
+                  <p className="empty-message">Division besvaras med kvot och rest.</p>
                 </div>
               </section>}
 

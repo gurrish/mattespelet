@@ -1,9 +1,26 @@
 import { TableClient, type TableEntity } from "@azure/data-tables";
-import { PlayerConflictError, newPlayer, rewardInputSchema, type PlayerState, type Redemption, type Reward, type RewardInput } from "./domain.js";
+import { createHash } from "node:crypto";
+import {
+  PlayerConflictError,
+  newPlayer,
+  operationsSchema,
+  rewardInputSchema,
+  type Operation,
+  type PlayerAccess,
+  type PlayerState,
+  type Redemption,
+  type Reward,
+  type RewardInput,
+} from "./domain.js";
 
 export interface Repository {
   getPlayer(id: string, email: string): Promise<PlayerState>;
   updatePlayer(id: string, email: string, update: (player: PlayerState) => PlayerState): Promise<PlayerState>;
+  getPlayerAccess(email: string): Promise<boolean | undefined>;
+  listPlayerAccess(): Promise<PlayerAccess[]>;
+  setPlayerAccess(email: string, allowed: boolean): Promise<void>;
+  getEnabledOperations(): Promise<Operation[]>;
+  setEnabledOperations(operations: Operation[]): Promise<void>;
   listRewards(): Promise<Reward[]>;
   getReward(id: string): Promise<Reward | undefined>;
   saveReward(reward: Reward): Promise<void>;
@@ -40,8 +57,11 @@ function playerFromEntity(entity: StoredEntity): PlayerState {
     throw new Error("Stored player has an invalid shape.");
   }
   const activeGameId = typeof entity.activeGameId === "string" && entity.activeGameId ? entity.activeGameId : null;
-  const question = typeof entity.question === "string" && entity.question
+  const storedQuestion = typeof entity.question === "string" && entity.question
     ? JSON.parse(entity.question) as PlayerState["question"]
+    : null;
+  const question = storedQuestion
+    ? { ...storedQuestion, operation: storedQuestion.operation ?? "multiply" }
     : null;
   return {
     email: entity.email,
@@ -49,6 +69,9 @@ function playerFromEntity(entity: StoredEntity): PlayerState {
     correctAnswers: entity.correctAnswers,
     answeredQuestions: entity.answeredQuestions,
     activeGameId,
+    activeOperations: typeof entity.activeOperations === "string" && entity.activeOperations
+      ? operationsSchema.parse(JSON.parse(entity.activeOperations))
+      : ["multiply"],
     question,
     tableChallenge: typeof entity.tableChallenge === "string" && entity.tableChallenge
       ? JSON.parse(entity.tableChallenge) as PlayerState["tableChallenge"]
@@ -66,6 +89,7 @@ function playerEntity(id: string, player: PlayerState): TableEntity<Record<strin
     correctAnswers: player.correctAnswers,
     answeredQuestions: player.answeredQuestions,
     activeGameId: player.activeGameId ?? "",
+    activeOperations: JSON.stringify(player.activeOperations),
     question: player.question ? JSON.stringify(player.question) : "",
     tableChallenge: player.tableChallenge ? JSON.stringify(player.tableChallenge) : "",
     redemptions: JSON.stringify(player.redemptions),
@@ -74,6 +98,8 @@ function playerEntity(id: string, player: PlayerState): TableEntity<Record<strin
 
 export class MemoryRepository implements Repository {
   private readonly players = new Map<string, PlayerState>();
+  private readonly playerAccess = new Map<string, PlayerAccess>();
+  private enabledOperations: Operation[] = ["multiply"];
   private readonly rewards = new Map<string, Reward>();
 
   async getPlayer(id: string, email: string): Promise<PlayerState> {
@@ -86,6 +112,26 @@ export class MemoryRepository implements Repository {
     const updated = update(copy({ ...current, email }));
     this.players.set(id, copy(updated));
     return copy(updated);
+  }
+
+  async getPlayerAccess(email: string): Promise<boolean | undefined> {
+    return this.playerAccess.get(email)?.allowed;
+  }
+
+  async listPlayerAccess(): Promise<PlayerAccess[]> {
+    return [...this.playerAccess.values()].map(copy);
+  }
+
+  async setPlayerAccess(email: string, allowed: boolean): Promise<void> {
+    this.playerAccess.set(email, { email, allowed });
+  }
+
+  async getEnabledOperations(): Promise<Operation[]> {
+    return copy(this.enabledOperations);
+  }
+
+  async setEnabledOperations(operations: Operation[]): Promise<void> {
+    this.enabledOperations = copy(operations);
   }
 
   async listRewards(): Promise<Reward[]> {
@@ -113,10 +159,12 @@ export class MemoryRepository implements Repository {
 export class TableRepository implements Repository {
   private readonly players: TableClient;
   private readonly rewards: TableClient;
+  private readonly settings: TableClient;
 
   constructor(connectionString: string) {
     this.players = TableClient.fromConnectionString(connectionString, "GamePlayers");
     this.rewards = TableClient.fromConnectionString(connectionString, "GameRewards");
+    this.settings = TableClient.fromConnectionString(connectionString, "GameSettings");
   }
 
   private async ensureTable(table: TableClient): Promise<void> {
@@ -165,6 +213,61 @@ export class TableRepository implements Repository {
     return updated;
   }
 
+  async getPlayerAccess(email: string): Promise<boolean | undefined> {
+    try {
+      const entity = await this.settings.getEntity<StoredEntity>("players", playerAccessKey(email));
+      if (typeof entity.allowed !== "boolean") throw new Error("Stored player access has an invalid shape.");
+      return entity.allowed;
+    } catch (error) {
+      if (isStatus(error, 404)) return undefined;
+      throw error;
+    }
+  }
+
+  async listPlayerAccess(): Promise<PlayerAccess[]> {
+    await this.ensureTable(this.settings);
+    const result: PlayerAccess[] = [];
+    for await (const entity of this.settings.listEntities<StoredEntity>({
+      queryOptions: { filter: "PartitionKey eq 'players'" },
+    })) {
+      if (typeof entity.email !== "string" || typeof entity.allowed !== "boolean") {
+        throw new Error("Stored player access has an invalid shape.");
+      }
+      result.push({ email: entity.email, allowed: entity.allowed });
+    }
+    return result;
+  }
+
+  async setPlayerAccess(email: string, allowed: boolean): Promise<void> {
+    await this.ensureTable(this.settings);
+    await this.settings.upsertEntity({
+      partitionKey: "players",
+      rowKey: playerAccessKey(email),
+      email,
+      allowed,
+    }, "Replace");
+  }
+
+  async getEnabledOperations(): Promise<Operation[]> {
+    try {
+      const entity = await this.settings.getEntity<StoredEntity>("settings", "operations");
+      if (typeof entity.operations !== "string") throw new Error("Stored operations have an invalid shape.");
+      return operationsSchema.parse(JSON.parse(entity.operations));
+    } catch (error) {
+      if (isStatus(error, 404)) return ["multiply"];
+      throw error;
+    }
+  }
+
+  async setEnabledOperations(operations: Operation[]): Promise<void> {
+    await this.ensureTable(this.settings);
+    await this.settings.upsertEntity({
+      partitionKey: "settings",
+      rowKey: "operations",
+      operations: JSON.stringify(operations),
+    }, "Replace");
+  }
+
   async listRewards(): Promise<Reward[]> {
     await this.ensureTable(this.rewards);
     const result: Reward[] = [];
@@ -203,6 +306,10 @@ export class TableRepository implements Repository {
     }
     return result;
   }
+}
+
+function playerAccessKey(email: string): string {
+  return createHash("sha256").update(email).digest("hex");
 }
 
 let repository: Repository | undefined;

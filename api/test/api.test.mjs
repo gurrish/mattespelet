@@ -20,6 +20,10 @@ function request(path, method = "GET", headers = {}, body) {
   });
 }
 
+function jsonRequest(path, method, headers, body) {
+  return request(path, method, { ...headers, "content-type": "application/json" }, JSON.stringify(body));
+}
+
 test("authenticated player can play, earn points, and redeem an admin-created reward", async () => {
   assert.equal((await handle(request("/api/game"), context)).status, 401);
   assert.equal((await handle(request("/api/game", "GET", { "x-dev-user-email": "stranger@local.test" }), context)).status, 403);
@@ -29,6 +33,30 @@ test("authenticated player can play, earn points, and redeem an admin-created re
     isAdmin: false,
     isPlayer: true,
   });
+
+  const listedPlayers = await handle(request("/api/players", "GET", adminHeaders), context);
+  assert.deepEqual(await listedPlayers.json(), ["daughter@local.test"]);
+  assert.equal((await handle(request("/api/players", "GET", playerHeaders), context)).status, 403);
+
+  const configuredOperations = await handle(jsonRequest("/api/settings/operations", "PUT", adminHeaders, {
+    operations: ["multiply", "add", "subtract", "divide"],
+  }), context);
+  assert.deepEqual(await configuredOperations.json(), ["multiply", "add", "subtract", "divide"]);
+  assert.equal((await handle(jsonRequest("/api/settings/operations", "PUT", playerHeaders, {
+    operations: ["multiply"],
+  }), context)).status, 403);
+
+  const addedPlayer = await handle(jsonRequest("/api/players", "POST", adminHeaders, {
+    email: "son@local.test",
+  }), context);
+  assert.equal(addedPlayer.status, 201);
+  assert.equal((await (await handle(request("/api/me", "GET", { "x-dev-user-email": "son@local.test" }), context)).json()).isPlayer, true);
+  assert.equal((await handle(request("/api/players/son%40local.test", "DELETE", adminHeaders), context)).status, 200);
+  assert.equal((await (await handle(request("/api/me", "GET", { "x-dev-user-email": "son@local.test" }), context)).json()).isPlayer, false);
+  await handle(request("/api/players/daughter%40local.test", "DELETE", adminHeaders), context);
+  assert.equal((await (await handle(request("/api/me", "GET", playerHeaders), context)).json()).isPlayer, false);
+  await handle(jsonRequest("/api/players", "POST", adminHeaders, { email: "daughter@local.test" }), context);
+  assert.equal((await (await handle(request("/api/me", "GET", playerHeaders), context)).json()).isPlayer, true);
 
   const deniedReward = await handle(request("/api/rewards", "POST", {
     ...playerHeaders,
@@ -56,14 +84,14 @@ test("authenticated player can play, earn points, and redeem an admin-created re
   }, JSON.stringify({ name: "För dyr", cost: 5001, active: true })), context);
   assert.equal(overLimitReward.status, 400);
 
-  const firstGame = await handle(request("/api/game/start", "POST", playerHeaders), context);
+  const firstGame = await handle(jsonRequest("/api/game/start", "POST", playerHeaders, { operations: ["multiply"] }), context);
   assert.equal(firstGame.status, 200);
   const initialGame = await firstGame.json();
   assert.equal(initialGame.isPlaying, true);
   assert.ok(initialGame.question.id);
   assert.ok(initialGame.question.points >= 1 && initialGame.question.points <= 3);
 
-  const repeatedStart = await handle(request("/api/game/start", "POST", playerHeaders), context);
+  const repeatedStart = await handle(jsonRequest("/api/game/start", "POST", playerHeaders, { operations: ["multiply"] }), context);
   assert.equal(repeatedStart.status, 409);
 
   const wrongAnswer = await handle(request("/api/game/answer", "POST", {
@@ -108,7 +136,7 @@ test("authenticated player can play, earn points, and redeem an admin-created re
   }, JSON.stringify({ penalize: true })), context);
   assert.equal((await repeatedForfeit.json()).penalty, 0);
 
-  const earnedMore = await handle(request("/api/game/start", "POST", playerHeaders), context);
+  const earnedMore = await handle(jsonRequest("/api/game/start", "POST", playerHeaders, { operations: ["multiply"] }), context);
   const earningGame = await earnedMore.json();
   const secondEarn = await handle(request("/api/game/answer", "POST", {
     ...playerHeaders,
@@ -139,11 +167,40 @@ test("authenticated player can play, earn points, and redeem an admin-created re
   const leftGame = await leaveWithoutPenalty.json();
   assert.equal(leftGame.penalty, 0);
   assert.equal(leftGame.game.points, beforeRedemption - reward.cost);
-  const invalidTable = await handle(request("/api/game/table/start", "POST", {
-    ...playerHeaders,
-    "content-type": "application/json",
-  }, JSON.stringify({ table: 13 })), context);
-  assert.equal(invalidTable.status, 400);
+
+  for (const operation of ["add", "subtract", "divide"]) {
+    const started = await handle(jsonRequest("/api/game/start", "POST", playerHeaders, { operations: [operation] }), context);
+    const operationGame = await started.json();
+    const question = operationGame.question;
+    assert.equal(question.operation, operation);
+    const expected = operation === "add"
+      ? question.left + question.right
+      : operation === "subtract"
+        ? question.left - question.right
+        : Math.floor(question.left / question.right);
+    const payload = {
+      questionId: question.id,
+      answer: expected,
+      ...(operation === "divide" ? { remainder: question.left % question.right } : {}),
+    };
+    const submitted = await handle(jsonRequest("/api/game/answer", "POST", playerHeaders, payload), context);
+    const result = await submitted.json();
+    assert.equal(result.correct, true);
+    assert.equal(result.game.question.operation, operation);
+    if (operation === "divide") {
+      assert.equal(result.correctRemainder, question.left % question.right);
+    }
+    await handle(jsonRequest("/api/game/forfeit", "POST", playerHeaders, { penalize: false }), context);
+  }
+
+  assert.equal((await handle(jsonRequest("/api/game/start", "POST", playerHeaders, { operations: ["unknown"] }), context)).status, 400);
+  for (const table of [11, 12, 13]) {
+    const invalidTable = await handle(request("/api/game/table/start", "POST", {
+      ...playerHeaders,
+      "content-type": "application/json",
+    }, JSON.stringify({ table })), context);
+    assert.equal(invalidTable.status, 400);
+  }
 
   const startedChallenge = await handle(request("/api/game/table/start", "POST", {
     ...playerHeaders,
@@ -224,7 +281,7 @@ test("authenticated player can play, earn points, and redeem an admin-created re
   const expiringChallenge = await handle(request("/api/game/table/start", "POST", {
     ...playerHeaders,
     "content-type": "application/json",
-  }, JSON.stringify({ table: 12 })), context);
+  }, JSON.stringify({ table: 10 })), context);
   const expiringGame = await expiringChallenge.json();
   try {
     Date.now = () => expiringGame.tableChallenge.startedAt + 60_000;
@@ -233,7 +290,7 @@ test("authenticated player can play, earn points, and redeem an admin-created re
       "content-type": "application/json",
     }, JSON.stringify({
       questionId: expiringGame.tableChallenge.questionId,
-      answer: 12 * expiringGame.tableChallenge.factor,
+      answer: 10 * expiringGame.tableChallenge.factor,
     })), context);
     const expiredResult = await expiredAnswer.json();
     assert.equal(expiredResult.expired, true);
