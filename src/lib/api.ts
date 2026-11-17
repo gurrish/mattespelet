@@ -34,8 +34,12 @@ export const submitTableAnswer = (questionId: string, answer: number) =>
   }>(
     "/api/game/table/answer", { method: "POST", body: JSON.stringify({ questionId, answer }) },
   );
-export const forfeitGame = (keepalive = false) =>
-  request<{ game: GameState; penalty: number }>("/api/game/forfeit", { method: "POST", keepalive });
+export const forfeitGame = (keepalive = false, penalize = true) =>
+  request<{ game: GameState; penalty: number }>("/api/game/forfeit", {
+    method: "POST",
+    keepalive,
+    body: JSON.stringify({ penalize }),
+  });
 export const getRewards = () => request<Reward[]>("/api/rewards");
 export const createReward = (reward: RewardInput) =>
   request<Reward>("/api/rewards", { method: "POST", body: JSON.stringify(reward) });

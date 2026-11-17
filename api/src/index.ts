@@ -3,6 +3,7 @@ import { createHash, randomInt, randomUUID } from "node:crypto";
 import {
   PlayerConflictError,
   answerInputSchema,
+  forfeitInputSchema,
   rewardInputSchema,
   tableStartSchema,
   type GameQuestion,
@@ -250,16 +251,18 @@ export async function handle(request: HttpRequest, context: InvocationContext): 
             points: current.points + earnedPoints,
             correctAnswers: current.correctAnswers + Number(correct),
             answeredQuestions: current.answeredQuestions + 1,
-            question: null,
+            question: correct ? createQuestion() : null,
           };
         });
         return json({ game: publicPlayer(player), ...result });
       }
       if (method === "POST" && id === "forfeit" && !action) {
+        const parsed = forfeitInputSchema.safeParse(await readBody(request));
+        if (!parsed.success) throw new HttpError(400, "Spelet kunde inte avslutas.");
         let penalty = 0;
         const player = await repo.updatePlayer(key, actor.email, (current) => {
           if (!current.activeGameId) return current;
-          penalty = Math.min(2, current.points);
+          penalty = parsed.data.penalize ? Math.min(2, current.points) : 0;
           return { ...current, points: current.points - penalty, activeGameId: null, question: null, tableChallenge: null };
         });
         return json({ game: publicPlayer(player), penalty });

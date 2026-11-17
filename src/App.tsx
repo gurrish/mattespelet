@@ -55,7 +55,7 @@ export default function App() {
       setError("");
       setNotice("");
     }
-    void forfeitGame(keepalive).then(({ game: updated, penalty }) => {
+    void forfeitGame(keepalive, keepalive).then(({ game: updated, penalty }) => {
       setGame(updated);
       setLastResult(null);
       setTableResult(null);
@@ -173,8 +173,9 @@ export default function App() {
       () => submitAnswer(game.question!.id, value),
       (result) => {
         setGame(result.game);
-        setLastResult(result);
+        setLastResult(result.correct ? null : result);
         setAnswer("");
+        if (result.correct) setNotice(`Rätt! Du fick ${result.earnedPoints} poäng.`);
       },
       "Svaret kunde inte skickas.",
     );
@@ -265,7 +266,7 @@ export default function App() {
     </header>
 
     <main>
-      {!(viewer.isPlayer && game?.isPlaying) && <section className="hero">
+      {!viewer.signedIn && <section className="hero">
         <div className="hero-copy">
           <span className="eyebrow"><span className="status-dot" /> MULTIPLIKATION 1–12</span>
           <h1>Räkna dig<br /><em>till drömmen!</em></h1>

@@ -15,6 +15,10 @@ export const tableStartSchema = z.object({
   table: z.number().int().min(1).max(12),
 }).strict();
 
+export const forfeitInputSchema = z.object({
+  penalize: z.boolean().default(true),
+}).strict();
+
 export type GameQuestion = {
   id: string;
   left: number;

@@ -83,7 +83,8 @@ test("authenticated player can play, earn points, and redeem an admin-created re
   assert.equal(result.correctAnswer, correctAnswer);
   assert.equal(result.earnedPoints, initialGame.question.points);
   assert.equal(result.game.points, initialGame.question.points);
-  assert.equal(result.game.question, null);
+  assert.ok(result.game.question);
+  assert.notEqual(result.game.question.id, initialGame.question.id);
 
   const replayedAnswer = await handle(request("/api/game/answer", "POST", {
     ...playerHeaders,
@@ -91,19 +92,20 @@ test("authenticated player can play, earn points, and redeem an admin-created re
   }, JSON.stringify({ questionId: initialGame.question.id, answer: correctAnswer })), context);
   assert.equal(replayedAnswer.status, 409);
 
-  const next = await handle(request("/api/game/next", "POST", playerHeaders), context);
-  assert.equal(next.status, 200);
-  const nextGame = await next.json();
-  assert.notEqual(nextGame.question.id, initialGame.question.id);
-
-  const forfeited = await handle(request("/api/game/forfeit", "POST", playerHeaders), context);
+  const forfeited = await handle(request("/api/game/forfeit", "POST", {
+    ...playerHeaders,
+    "content-type": "application/json",
+  }, JSON.stringify({ penalize: true })), context);
   assert.equal(forfeited.status, 200);
   const forfeitedGame = await forfeited.json();
   assert.equal(forfeitedGame.penalty, Math.min(2, initialGame.question.points));
   assert.equal(forfeitedGame.game.points, initialGame.question.points - forfeitedGame.penalty);
   assert.equal(forfeitedGame.game.isPlaying, false);
 
-  const repeatedForfeit = await handle(request("/api/game/forfeit", "POST", playerHeaders), context);
+  const repeatedForfeit = await handle(request("/api/game/forfeit", "POST", {
+    ...playerHeaders,
+    "content-type": "application/json",
+  }, JSON.stringify({ penalize: true })), context);
   assert.equal((await repeatedForfeit.json()).penalty, 0);
 
   const earnedMore = await handle(request("/api/game/start", "POST", playerHeaders), context);
@@ -130,7 +132,13 @@ test("authenticated player can play, earn points, and redeem an admin-created re
   const listedRedemptions = await handle(request("/api/redemptions", "GET", adminHeaders), context);
   assert.equal((await listedRedemptions.json()).length, 1);
 
-  await handle(request("/api/game/forfeit", "POST", playerHeaders), context);
+  const leaveWithoutPenalty = await handle(request("/api/game/forfeit", "POST", {
+    ...playerHeaders,
+    "content-type": "application/json",
+  }, JSON.stringify({ penalize: false })), context);
+  const leftGame = await leaveWithoutPenalty.json();
+  assert.equal(leftGame.penalty, 0);
+  assert.equal(leftGame.game.points, beforeRedemption - reward.cost);
   const invalidTable = await handle(request("/api/game/table/start", "POST", {
     ...playerHeaders,
     "content-type": "application/json",
